@@ -133,30 +133,32 @@ Filter: Mochi's completed tasks after that:
 
 ## 🧪 Testing PawPal+
 
-```bash
-# Run the full test suite:
-pytest
-
-# Run with coverage:
-pytest --cov
-```
-
-Sample test output:
-
-```
-============================= test session starts ==============================
+========================================================================================================================================== 40 passed in 0.02s ===========================================================================================================================================
+(.venv) (base) Mac:ai110-module2show-pawpal-starter vians$ python -m pytest
+========================================================================================================================================== test session starts ===========================================================================================================================================
 platform darwin -- Python 3.13.14, pytest-9.1.1, pluggy-1.7.0
 rootdir: /Users/vians/AI110/ai110-module2show-pawpal-starter
 configfile: pytest.ini
 testpaths: tests
-collected 29 items
+plugins: cov-7.1.0, anyio-4.15.1
+collected 40 items                                                                                                                                                                                                                                                                                       
 
-tests/test_pawpal.py .............................                       [100%]
+tests/test_pawpal.py ........................................                                                                                                                                                                                                                                      [100%]
 
-============================== 29 passed in 0.02s ==============================
-```
+=========================================================================================================================================== 40 passed in 0.02s ===========================================================================================================================================
 
-The tests in `tests/test_pawpal.py` cover task completion, adding/removing tasks, daily vs. weekly recurrence, gathering tasks across multiple pets, priority ordering, the time budget, pinned times and conflict handling, the day window, the empty-plan edge case, sorting by time, filtering by pet/status, recurring task completion (daily, weekly, done early, done twice), and conflict warnings.
+**What the tests cover:** the 40 tests in `tests/test_pawpal.py` check both normal use and edge cases:
+
+- **Sorting:** the plan comes out in time order, and tasks are placed by priority, then preferred category, then shortest duration.
+- **Recurring tasks:** completing a daily task creates a new one for the next day; weekly tasks return on their weekday, including across a year boundary.
+- **Conflict detection:** tasks at the same time get a warning, and one is moved to the next free slot or skipped if there's no room.
+- **Limits:** the time budget and the 08:00–20:00 day window are respected, including exact-fit and zero-budget cases.
+- **Data:** adding, removing, and filtering tasks, a pet with no tasks, and rejecting invalid tasks.
+
+**Confidence level: ★★★★☆ (4/5)**
+
+- **Why 4:** all 40 tests pass, covering every core behavior (sorting, recurrence, conflicts, budget, day window) plus boundary cases such as exact-fit budgets, tasks ending right at 20:00, three-way clashes, and year rollover. Hand-checking the same cases in a separate script gave matching results.
+- **Why not 5:** the Streamlit UI in `app.py` is only checked by hand, the text from `DailyPlan.explain()` isn't tested, and the scheduler is greedy by priority, so it builds a valid plan but not always the one that fits the most tasks (one long high-priority task can crowd out several short ones).
 
 ## 📐 Smarter Scheduling
 

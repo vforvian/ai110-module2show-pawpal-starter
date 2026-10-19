@@ -398,3 +398,142 @@ def test_pinned_task_running_past_midnight_is_skipped_not_crashing():
 
     assert plan.scheduled == []
     assert "does not fit" in plan.skipped[0].reason
+
+
+# --- Edge cases ---------------------------------------------------------
+
+def test_tasks_that_exactly_use_the_budget_are_all_scheduled():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Walk", 30))
+    pet.add_task(Task("Feeding", 10))
+    owner = make_owner(minutes=40, pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert sorted(titles(plan)) == ["Feeding", "Walk"]
+    assert plan.total_minutes() == 40
+    assert plan.skipped == []
+
+
+def test_pinned_task_ending_exactly_at_day_end_is_scheduled():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Last walk", 30, preferred_time=time(19, 30)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert plan.scheduled[0].start == time(19, 30)
+    assert plan.scheduled[0].end == time(20, 0)
+    assert plan.skipped == []
+
+
+def test_three_tasks_at_the_same_time_are_warned_and_spread_out():
+    pet = Pet("Mochi", "dog")
+    for title in ("Pill", "Breakfast", "Water"):
+        pet.add_task(Task(title, 10, preferred_time=time(9, 0)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert len(plan.warnings) == 3  # every pair overlaps
+    assert [entry.start for entry in plan.scheduled] == [
+        time(9, 0), time(9, 10), time(9, 20)
+    ]
+
+
+def test_higher_priority_pinned_task_keeps_its_time_over_an_earlier_one():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Brush", 30, Priority.LOW, preferred_time=time(8, 0)))
+    pet.add_task(Task("Meds", 30, Priority.HIGH, preferred_time=time(8, 10)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    meds, brush = plan.scheduled
+    assert (meds.task.title, meds.start) == ("Meds", time(8, 10))
+    assert (brush.task.title, brush.start) == ("Brush", time(8, 40))
+    assert "moved from 08:00" in brush.reason
+
+
+def test_conflicting_pinned_task_with_no_later_slot_is_skipped():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Walk", 30, Priority.HIGH, preferred_time=time(19, 30)))
+    pet.add_task(Task("Play", 30, preferred_time=time(19, 30)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert titles(plan) == ["Walk"]
+    assert [s.task.title for s in plan.skipped] == ["Play"]
+    assert "no later slot is free" in plan.skipped[0].reason
+
+
+def test_daily_task_completed_on_new_years_eve_returns_jan_1():
+    task = Task("Feeding", 10)
+
+    upcoming = task.next_occurrence(date(2026, 12, 31))
+
+    assert upcoming.due_date == date(2027, 1, 1)
+
+
+def test_weekly_task_done_the_day_before_returns_the_next_day():
+    bath = Task("Bath", 45, frequency=Frequency.WEEKLY, due_weekday=6)
+    saturday = date(2026, 10, 17)
+
+    upcoming = bath.next_occurrence(saturday)
+
+    assert upcoming.due_date == SUNDAY
+    assert upcoming.is_due(SUNDAY)
+
+
+def test_next_occurrence_keeps_settings_but_gets_new_id():
+    task = Task("Pill", 5, Priority.HIGH, "meds", preferred_time=time(8, 0))
+
+    upcoming = task.next_occurrence(MONDAY)
+
+    assert upcoming.priority is Priority.HIGH
+    assert upcoming.category == "meds"
+    assert upcoming.preferred_time == time(8, 0)
+    assert upcoming.completed is False
+    assert upcoming.id != task.id
+
+
+def test_zero_budget_skips_everything():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Walk", 30))
+    pet.add_task(Task("Pill", 5, preferred_time=time(8, 0)))
+    owner = make_owner(minutes=0, pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert plan.scheduled == []
+    assert len(plan.skipped) == 2
+    assert all("budget" in s.reason for s in plan.skipped)
+
+
+def test_pet_with_no_tasks_does_not_affect_other_pets():
+    empty, mochi = Pet("Luna", "cat"), Pet("Mochi", "dog")
+    mochi.add_task(Task("Walk", 30))
+    owner = make_owner(pets=[empty, mochi])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    assert [entry.pet.name for entry in plan.scheduled] == ["Mochi"]
+    assert owner.filter_tasks(pet_name="Luna") == []
+
+
+def test_plan_is_returned_in_chronological_order():
+    pet = Pet("Mochi", "dog")
+    # Added out of order, and the HIGH task is the latest one
+    pet.add_task(Task("Dinner", 10, Priority.HIGH,
+                      preferred_time=time(18, 0)))
+    pet.add_task(Task("Lunch", 10, preferred_time=time(12, 0)))
+    pet.add_task(Task("Play", 20, Priority.LOW))
+    pet.add_task(Task("Breakfast", 10, preferred_time=time(8, 0)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner).generate_plan(MONDAY)
+
+    starts = [entry.start for entry in plan.scheduled]
+    assert starts == sorted(starts)
+    assert titles(plan) == ["Breakfast", "Play", "Lunch", "Dinner"]
