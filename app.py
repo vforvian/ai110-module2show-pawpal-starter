@@ -15,6 +15,14 @@ st.caption(
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
             "Saturday", "Sunday"]
 
+
+def readable_conflict(warning: str) -> str:
+    """Turn a detect_conflicts message into a plain-language line."""
+    return (warning
+            .replace(" [same pet]", " — the same pet can't do both at once")
+            .replace(" [different pets]",
+                     " — you can't be with both pets at once"))
+
 # The Owner lives in session_state so it survives Streamlit's reruns
 if "owner" not in st.session_state:
     st.session_state.owner = Owner("Jordan", available_minutes=120)
@@ -154,6 +162,18 @@ else:
             for pet, t in Scheduler.sort_by_time(shown)
         ])
 
+    # Warn about clashes now, while the owner can still fix the times
+    clashes = Scheduler(owner).detect_conflicts(date.today())
+    if clashes:
+        st.warning(
+            f"**{len(clashes)} time clash{'es' if len(clashes) > 1 else ''} "
+            f"today.** These tasks ask for overlapping times:\n\n"
+            + "\n".join(f"- {readable_conflict(c)}" for c in clashes)
+            + "\n\nThe schedule will keep the higher-priority task at its "
+            "time and move the other one later (or skip it if the day is "
+            "full). To choose yourself, change one task's start time."
+        )
+
     # --- Mark a task complete ----------------------------------------------
     open_tasks = owner.filter_tasks(completed=False)
     if open_tasks:
@@ -193,14 +213,40 @@ if st.button("Generate schedule", type="primary"):
         st.error("The day must end after it starts.")
     else:
         plan = Scheduler(owner, day_start, day_end).generate_plan(plan_day)
-        st.markdown(
-            f"**{plan_day:%A, %B %d}** — {plan.total_minutes()} of "
-            f"{plan.available_minutes} minutes used"
-        )
-        for warning in plan.warnings:
-            st.warning(f"⚠ Time conflict: {warning}. The lower-priority "
-                       f"task was moved to the next free slot.")
+        st.markdown(f"#### {plan_day:%A, %B %d}")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Tasks scheduled", len(plan.scheduled))
+        col2.metric("Minutes used",
+                    f"{plan.total_minutes()} / {plan.available_minutes}")
+        col3.metric("Skipped", len(plan.skipped))
+
+        # Conflicts: say what clashed AND what the scheduler did about it
+        if plan.warnings:
+            moved = [e for e in plan.scheduled
+                     if e.reason.startswith("moved from")]
+            dropped = [s for s in plan.skipped
+                       if s.reason.startswith("overlaps")]
+            lines = [f"- {readable_conflict(w)}" for w in plan.warnings]
+            fixes = (
+                [f"- **{e.task.title}** ({e.pet.name}) moved from "
+                 f"{e.task.preferred_time:%H:%M} to {e.start:%H:%M}"
+                 for e in moved]
+                + [f"- **{s.task.title}** ({s.pet.name}) skipped: no free "
+                   f"time later in the day" for s in dropped]
+            )
+            st.warning(
+                f"**⚠ {len(plan.warnings)} time "
+                f"clash{'es' if len(plan.warnings) > 1 else ''}**\n\n"
+                + "\n".join(lines)
+                + ("\n\n**What we did:**\n\n" + "\n".join(fixes)
+                   if fixes else "")
+                + "\n\nNot what you wanted? Change one task's start time "
+                "or priority and generate again."
+            )
+
         if plan.scheduled:
+            if not plan.skipped:
+                st.success("Everything due today fits in your schedule. 🎉")
             st.table([
                 {
                     "Time": f"{e.start:%H:%M}–{e.end:%H:%M}",
@@ -211,10 +257,15 @@ if st.button("Generate schedule", type="primary"):
                 }
                 for e in plan.scheduled
             ])
+        elif plan.skipped:
+            st.error("None of the due tasks fit. See the skipped list below.")
         else:
             st.info("Nothing is due on this day.")
+
         if plan.skipped:
             st.markdown("**Skipped**")
-            for item in plan.skipped:
-                st.warning(f"{item.task.title} ({item.pet.name}): "
-                           f"{item.reason}")
+            st.table([
+                {"Task": s.task.title, "Pet": s.pet.name,
+                 "Priority": s.task.priority.name.lower(), "Why": s.reason}
+                for s in plan.skipped
+            ])
