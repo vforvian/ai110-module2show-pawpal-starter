@@ -22,6 +22,24 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## ✨ Features
+
+Each feature is backed by a method in `pawpal_system.py` and covered by `tests/test_pawpal.py`.
+
+- **Multi-pet planning**: one plan covers all of an owner's pets. Tasks travel as `(pet, task)` pairs so every entry remembers whose it is (`Owner.get_all_tasks`).
+- **Priority ordering**: tasks are placed in order of highest priority first, then the owner's preferred categories (e.g. meds before walks), then shortest duration (`Scheduler._sort_tasks`).
+- **Sorting by time**: tasks with a fixed start time are listed in time order, flexible tasks last. The sort is stable, so ties keep the order they were added in (`Scheduler.sort_by_time`).
+- **Fixed-time tasks first, then gap filling**: tasks with a start time are placed at that time. Flexible tasks then go into the earliest free gap that is long enough (`_place_pinned`, `_place_flexible`, `_earliest_gap`).
+- **Conflict warnings**: tasks whose requested times overlap get a plain warning that says whether it's the same pet or different pets. Tasks that only touch (08:00–08:30 and 08:30) don't count. It returns messages instead of crashing (`Scheduler.detect_conflicts`).
+- **Automatic conflict resolution**: when two fixed-time tasks clash, the higher-priority one keeps its time and the other moves to the next free slot. If nothing is free before the day ends, it is skipped with a reason.
+- **Time budget**: tasks are added until the owner's available minutes run out. One task too long for the remaining budget doesn't stop shorter tasks after it from fitting (`_fits_budget`).
+- **Day window**: nothing is scheduled before the day starts or after it ends (08:00–20:00 by default). A fixed-time task that would run past the end of the day, or past midnight, is skipped instead of crashing.
+- **Daily recurrence**: completing a daily task marks it done and adds a fresh copy due the next day, even across month and year boundaries (`Pet.complete_task`, `Task.next_occurrence`).
+- **Weekly recurrence**: weekly tasks are only due on their weekday. Completing one schedules the next matching weekday: done early on Friday, a Sunday task is still due this Sunday, while done on Sunday it's due next Sunday.
+- **Filtering**: show one pet's tasks, only to-do or only done tasks, or both (`Owner.filter_tasks`).
+- **Explained plans**: every scheduled task says why it's there ("pinned to its preferred time", "moved from 18:00 because…"), and every skipped task says why it was left out (`DailyPlan.explain`).
+- **Input checks**: tasks with zero or negative duration, weekly tasks with no weekday, and duplicate pet names are rejected with a clear message.
+
 ## 🛠️ Implementation Summary
 
 PawPal+ plans a pet owner's day across **all of their pets**. The logic lives in `pawpal_system.py`; `main.py` is a terminal demo and `tests/test_pawpal.py` holds the tests.
@@ -40,7 +58,9 @@ PawPal+ plans a pet owner's day across **all of their pets**. The logic lives in
    - skips anything that would exceed the time budget or run past the end of the day.
 5. **`DailyPlan`** is the result: a list of `ScheduledTask`s (task, pet, start, end, reason) and `SkippedTask`s (task, pet, reason), plus `warnings` for overlapping fixed-time requests. `total_minutes()` reports time used, and `explain()` describes the plan in plain language.
 
-The scheduler never changes the owner's data (only `Pet.complete_task` does), so the same owner can be planned for any day, and the UI only needs to display the `DailyPlan` it gets back. The class diagram is in `diagrams/uml.mmd`.
+The scheduler never changes the owner's data (only `Pet.complete_task` does), so the same owner can be planned for any day, and the UI only needs to display the `DailyPlan` it gets back. The final class diagram source is `diagrams/uml_final.mmd`:
+
+![PawPal+ class diagram](diagrams/uml_final.png)
 
 ## Getting started
 
@@ -240,12 +260,66 @@ In the app, use the **Mark complete** form under the task table. It confirms whe
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
+Start the app with `streamlit run app.py`. The page is one column with four parts, top to bottom.
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+### Main UI features
 
-**Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+| Section | What you can do |
+|---------|-----------------|
+| **👤 Owner** | Set your name and how many minutes you have for pet care today (10–720). |
+| **🐶 Add a pet** | Add a pet with a name, species and age. Empty or duplicate names are rejected. |
+| **📝 Add a task** | Pick a pet and give the task a title, duration, priority, category, and whether it repeats daily or weekly (and on which weekday). Tick **Must start at a specific time** to fix its start time. |
+| **📋 Your pets and tasks** | See all tasks in a table sorted by time (fixed-time first, flexible last). Filter by pet and by **To do / Done / All**. A yellow warning appears here as soon as two of today's tasks ask for overlapping times. Use **Mark complete** to finish a task, and the app tells you when it's next due. |
+| **📅 Build schedule** | Choose the day and when it starts and ends, then click **Generate schedule**. You get totals (tasks scheduled, minutes used, tasks skipped), any clash warnings with what the app did about them, the schedule table with a reason for each task, and a table of skipped tasks with reasons. |
+
+### Example workflow
+
+1. **Set up the owner.** Leave the name as Jordan and the time at 120 minutes.
+2. **Add two pets:** Mochi (dog, age 3) and Luna (cat, age 5). A green "Added Mochi!" message confirms each one.
+3. **Add a fixed-time task.** For Mochi: *Heartworm pill*, 5 min, high priority, category meds, ticked **Must start at a specific time**, start 08:00.
+4. **Add a clashing task.** For Luna: *Breakfast*, 10 min, high priority, feeding, fixed at 08:00. Under the task table a warning appears right away: *"Heartworm pill (Mochi) at 08:00 overlaps Breakfast (Luna) at 08:00 — you can't be with both pets at once."*
+5. **Add a flexible task.** For Mochi: *Morning walk*, 30 min, high priority, walk, no fixed time. The task table now lists the 08:00 tasks first and the walk last as "flexible".
+6. **Generate today's schedule.** The pill stays at 08:00–08:05. Breakfast moves to 08:05–08:15, and the warning's **What we did** list says so. The walk fills the next gap at 08:15–08:45. All three fit, so a green "Everything due today fits in your schedule" message appears.
+7. **Mark the walk complete.** Choose *Mochi: Morning walk* in **Mark complete**. The app confirms the next walk is due tomorrow. Switch the status filter to **Done** to see the finished walk, or **To do** to see tomorrow's copy.
+
+### Scheduler behaviors shown
+
+- **Sorting:** the task table is sorted by start time, and the schedule places high-priority tasks before lower ones.
+- **Conflict warnings:** clashes are flagged while you add tasks and again in the schedule, with what was moved or skipped.
+- **Conflict resolution:** the higher-priority task keeps its time; the other moves to the next free slot.
+- **Gap filling:** flexible tasks go into the earliest free slot around fixed-time tasks.
+- **Time budget and skipping:** tasks that don't fit the budget or the day are listed as skipped with a reason.
+- **Daily recurrence:** completing a task brings it back on its next due day.
+- **Filtering:** by pet and by done or to-do.
+
+### Sample CLI output
+
+`python main.py` runs the same logic in the terminal with two pets, a 120-minute budget and two deliberate clashes. Below is an excerpt from a run on a Sunday, when the weekly bath is due. The full output, including the sorting and filtering demos, is in the **🖥️ Sample Output** section above.
+
+```
+========================================================================
+🐾 Today's Schedule for Jordan — Sunday, October 18, 2026
+========================================================================
+Time         Task              Pet     Priority  Why
+------------------------------------------------------------------------
+⚠ Conflict: Heartworm pill (Mochi) at 08:00 overlaps Breakfast (Luna) at 08:00 [different pets]
+⚠ Conflict: Evening walk (Mochi) at 18:00 overlaps Dinner (Mochi) at 18:00 [same pet]
+08:00-08:05  Heartworm pill    Mochi   high      pinned to its preferred time
+08:05-08:15  Breakfast         Luna    high      moved from 08:00 because it overlapped Heartworm pill (Mochi)
+08:15-08:45  Morning walk      Mochi   high      placed in the earliest free slot
+08:45-09:00  Brush coat        Luna    low       placed in the earliest free slot
+12:30-12:50  Play session      Luna    medium    pinned to its preferred time
+18:00-18:30  Evening walk      Mochi   medium    pinned to its preferred time
+18:30-18:40  Dinner            Mochi   medium    moved from 18:00 because it overlapped Evening walk (Mochi)
+------------------------------------------------------------------------
+Time used: 120 of 120 minutes
+
+Skipped:
+  ✗ Bath (Mochi): not enough time left in today's budget
+========================================================================
+
+Completed 'Morning walk'; next one is due Monday, October 19.
+
+Filter: Mochi's completed tasks after that:
+  flexible Morning walk      Mochi  done
+```
