@@ -1,0 +1,116 @@
+classDiagram
+    %% PawPal+ class diagram — mirrors pawpal_system.py.
+    %% Keep this file updated so it matches the final implementation.
+    %% PetTask = tuple[Pet, Task] (Mermaid can't nest generic types).
+    %% Not drawn: module helpers to_minutes() and from_minutes().
+    %% #95; is an escaped underscore so __init__ isn't read as bold.
+
+    class Priority {
+        <<enumeration>>
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+    }
+
+    class Frequency {
+        <<enumeration>>
+        DAILY
+        WEEKLY
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +str category
+        +Frequency frequency
+        +Optional~int~ due_weekday
+        +Optional~time~ preferred_time
+        +Optional~date~ due_date
+        +bool completed
+        +str id
+        -#95;#95;post_init#95;#95;() None
+        +is_due(day: date) bool
+        +mark_complete() None
+        +mark_incomplete() None
+        +next_occurrence(completed_on: date) Task
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +list~str~ special_needs
+        +list~Task~ tasks
+        +add_task(task: Task) None
+        +get_task(task_id: str) Task
+        +remove_task(task_id: str) None
+        +complete_task(task_id: str, day: date) Task
+    }
+
+    class Owner {
+        +str name
+        +int available_minutes
+        +list~str~ preferred_categories
+        +list~Pet~ pets
+        +add_pet(pet: Pet) None
+        +get_all_tasks() list~PetTask~
+        +filter_tasks(pet_name: Optional~str~, completed: Optional~bool~) list~PetTask~
+    }
+
+    class ScheduledTask {
+        +Task task
+        +Pet pet
+        +time start
+        +time end
+        +str reason
+    }
+
+    class SkippedTask {
+        +Task task
+        +Pet pet
+        +str reason
+    }
+
+    class DailyPlan {
+        +date day
+        +int available_minutes
+        +list~ScheduledTask~ scheduled
+        +list~SkippedTask~ skipped
+        +list~str~ warnings
+        +total_minutes() int
+        +explain() str
+    }
+
+    class Scheduler {
+        +Owner owner
+        +time day_start
+        +time day_end
+        +#95;#95;init#95;#95;(owner: Owner, day_start: time, day_end: time)
+        +generate_plan(day: date) DailyPlan
+        +sort_by_time(items: list~PetTask~)$ list~PetTask~
+        +detect_conflicts(day: date) list~str~
+        -_collect_due_tasks(day: date) list~PetTask~
+        -_sort_tasks(items: list~PetTask~) list~PetTask~
+        -_find_conflicts(entries: list~ScheduledTask~) list~tuple~
+        -_fits_budget(plan: DailyPlan, task: Task) bool
+        -_place_pinned(plan: DailyPlan, pet: Pet, task: Task) None
+        -_place_flexible(plan: DailyPlan, pet: Pet, task: Task) None
+        -_earliest_gap(plan: DailyPlan, duration: int, not_before: int) Optional~int~
+    }
+
+    Owner "1" --> "0..*" Pet : owns
+    Pet "1" --> "0..*" Task : needs
+    Task --> Priority : has
+    Task --> Frequency : repeats
+    Task ..> Task : next_occurrence() creates
+    Scheduler --> Owner : reads tasks, budget, preferences
+    Scheduler ..> DailyPlan : creates
+    Scheduler ..> ScheduledTask : places
+    Scheduler ..> SkippedTask : records
+    DailyPlan "1" --> "0..*" ScheduledTask : contains
+    DailyPlan "1" --> "0..*" SkippedTask : contains
+    ScheduledTask --> Task : wraps
+    ScheduledTask --> Pet : for
+    SkippedTask --> Task : wraps
+    SkippedTask --> Pet : for
