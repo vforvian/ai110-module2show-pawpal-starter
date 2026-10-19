@@ -21,8 +21,13 @@ classDiagram
         +Priority priority
         +str category
         +Frequency frequency
+        +Optional~int~ due_weekday
         +Optional~time~ preferred_time
+        +bool completed
+        +str id
         +is_due(day: date) bool
+        +mark_complete() None
+        +mark_incomplete() None
     }
 
     class Pet {
@@ -32,16 +37,16 @@ classDiagram
         +list~str~ special_needs
         +list~Task~ tasks
         +add_task(task: Task) None
-        +remove_task(title: str) None
+        +remove_task(task_id: str) None
     }
 
     class Owner {
         +str name
         +int available_minutes
-        +list~str~ preferences
+        +list~str~ preferred_categories
         +list~Pet~ pets
         +add_pet(pet: Pet) None
-        +all_tasks() list~Task~
+        +get_all_tasks() list~tuple~Pet, Task~~
     }
 
     class ScheduledTask {
@@ -52,10 +57,17 @@ classDiagram
         +str reason
     }
 
+    class SkippedTask {
+        +Task task
+        +Pet pet
+        +str reason
+    }
+
     class DailyPlan {
         +date day
+        +int available_minutes
         +list~ScheduledTask~ scheduled
-        +list~tuple~ skipped
+        +list~SkippedTask~ skipped
         +total_minutes() int
         +explain() str
     }
@@ -63,20 +75,27 @@ classDiagram
     class Scheduler {
         +Owner owner
         +time day_start
-        +__init__(owner: Owner, day_start: time)
+        +time day_end
+        +__init__(owner: Owner, day_start: time, day_end: time)
         +generate_plan(day: date) DailyPlan
-        -_collect_due_tasks(day: date) list~Task~
-        -_sort_tasks(tasks: list~Task~) list~Task~
+        -_collect_due_tasks(day: date) list~tuple~Pet, Task~~
+        -_sort_tasks(items: list~tuple~Pet, Task~~) list~tuple~Pet, Task~~
         -_find_conflicts(entries: list~ScheduledTask~) list~tuple~
+        -_fits_budget(plan: DailyPlan, task: Task) bool
+        -_place_pinned(plan: DailyPlan, pet: Pet, task: Task) None
+        -_place_flexible(plan: DailyPlan, pet: Pet, task: Task) None
+        -_earliest_gap(plan: DailyPlan, duration: int, not_before: int) Optional~int~
     }
 
     Owner "1" --> "1..*" Pet : owns
     Pet "1" --> "0..*" Task : needs
     Task --> Priority : has
     Task --> Frequency : repeats
-    Scheduler --> Owner : plans for
+    Scheduler --> Owner : reads get_all_tasks()
     Scheduler ..> DailyPlan : creates
     DailyPlan "1" --> "0..*" ScheduledTask : contains
-    DailyPlan ..> Task : skipped (task, reason)
+    DailyPlan "1" --> "0..*" SkippedTask : contains
     ScheduledTask --> Task : wraps
     ScheduledTask --> Pet : for
+    SkippedTask --> Task : wraps
+    SkippedTask --> Pet : for
