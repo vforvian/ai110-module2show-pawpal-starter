@@ -1,15 +1,82 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal+ class diagram — mirrors pawpal_system.py.
+    %% Keep this file updated so it matches the final implementation.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Priority {
+        <<enumeration>>
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Frequency {
+        <<enumeration>>
+        DAILY
+        WEEKLY
     }
 
-    ClassName --> AnotherClass : relationship
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +str category
+        +Frequency frequency
+        +Optional~time~ preferred_time
+        +is_due(day: date) bool
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +list~str~ special_needs
+        +list~Task~ tasks
+        +add_task(task: Task) None
+        +remove_task(title: str) None
+    }
+
+    class Owner {
+        +str name
+        +int available_minutes
+        +list~str~ preferences
+        +list~Pet~ pets
+        +add_pet(pet: Pet) None
+        +all_tasks() list~Task~
+    }
+
+    class ScheduledTask {
+        +Task task
+        +Pet pet
+        +time start
+        +time end
+        +str reason
+    }
+
+    class DailyPlan {
+        +date day
+        +list~ScheduledTask~ scheduled
+        +list~tuple~ skipped
+        +total_minutes() int
+        +explain() str
+    }
+
+    class Scheduler {
+        +Owner owner
+        +time day_start
+        +__init__(owner: Owner, day_start: time)
+        +generate_plan(day: date) DailyPlan
+        -_collect_due_tasks(day: date) list~Task~
+        -_sort_tasks(tasks: list~Task~) list~Task~
+        -_find_conflicts(entries: list~ScheduledTask~) list~tuple~
+    }
+
+    Owner "1" --> "1..*" Pet : owns
+    Pet "1" --> "0..*" Task : needs
+    Task --> Priority : has
+    Task --> Frequency : repeats
+    Scheduler --> Owner : plans for
+    Scheduler ..> DailyPlan : creates
+    DailyPlan "1" --> "0..*" ScheduledTask : contains
+    DailyPlan ..> Task : skipped (task, reason)
+    ScheduledTask --> Task : wraps
+    ScheduledTask --> Pet : for
