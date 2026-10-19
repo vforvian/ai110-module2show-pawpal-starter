@@ -246,3 +246,155 @@ def test_owner_with_no_tasks_gets_empty_plan():
     assert plan.scheduled == []
     assert plan.skipped == []
     assert plan.total_minutes() == 0
+
+
+# --- Sorting by time ----------------------------------------------------
+
+def test_sort_by_time_orders_pinned_tasks_and_puts_flexible_last():
+    pet = Pet("Mochi", "dog")
+    play = Task("Play", 20)
+    evening = Task("Evening walk", 30, preferred_time=time(18, 0))
+    pill = Task("Pill", 5, preferred_time=time(8, 0))
+    brush = Task("Brush", 15)
+    for task in (play, evening, pill, brush):
+        pet.add_task(task)
+    owner = make_owner(pets=[pet])
+
+    ordered = Scheduler.sort_by_time(owner.get_all_tasks())
+
+    # Flexible tasks keep their original order after the pinned ones
+    assert [t.title for _, t in ordered] == [
+        "Pill", "Evening walk", "Play", "Brush"
+    ]
+
+
+# --- Filtering ----------------------------------------------------------
+
+def test_filter_tasks_by_pet_and_status():
+    mochi, luna = Pet("Mochi", "dog"), Pet("Luna", "cat")
+    walk, feed, brush = Task("Walk", 30), Task("Feeding", 10), Task("Brush", 5)
+    feed.mark_complete()
+    mochi.add_task(walk)
+    luna.add_task(feed)
+    luna.add_task(brush)
+    owner = make_owner(pets=[mochi, luna])
+
+    assert owner.filter_tasks() == owner.get_all_tasks()
+    assert owner.filter_tasks(pet_name="Luna") == [(luna, feed), (luna, brush)]
+    assert owner.filter_tasks(completed=True) == [(luna, feed)]
+    assert owner.filter_tasks(pet_name="Luna", completed=False) == [
+        (luna, brush)
+    ]
+    assert owner.filter_tasks(pet_name="Nobody") == []
+
+
+# --- Recurring tasks ----------------------------------------------------
+
+def test_completing_daily_task_schedules_it_for_tomorrow():
+    pet = Pet("Mochi", "dog")
+    walk = Task("Walk", 30, Priority.HIGH)
+    pet.add_task(walk)
+    owner = make_owner(pets=[pet])
+    scheduler = Scheduler(owner)
+
+    upcoming = pet.complete_task(walk.id, MONDAY)
+
+    assert walk.completed
+    assert upcoming.id != walk.id
+    assert (upcoming.title, upcoming.priority) == ("Walk", Priority.HIGH)
+    assert upcoming.due_date == date(2026, 10, 20)
+    assert not upcoming.completed
+    # Done for today, back tomorrow
+    assert titles(scheduler.generate_plan(MONDAY)) == []
+    assert titles(scheduler.generate_plan(date(2026, 10, 20))) == ["Walk"]
+
+
+def test_completing_weekly_task_schedules_it_for_next_week():
+    pet = Pet("Mochi", "dog")
+    bath = Task("Bath", 45, frequency=Frequency.WEEKLY, due_weekday=6)
+    pet.add_task(bath)
+
+    upcoming = pet.complete_task(bath.id, SUNDAY)
+
+    assert upcoming.due_date == date(2026, 10, 25)
+    assert not upcoming.is_due(SUNDAY)
+    assert upcoming.is_due(date(2026, 10, 25))
+
+
+def test_weekly_task_done_early_still_comes_back_on_its_weekday():
+    pet = Pet("Mochi", "dog")
+    bath = Task("Bath", 45, frequency=Frequency.WEEKLY, due_weekday=6)
+    pet.add_task(bath)
+
+    # Done on Friday instead of Sunday: next one is the coming Sunday
+    upcoming = pet.complete_task(bath.id, date(2026, 10, 16))
+
+    assert upcoming.due_date == SUNDAY
+
+
+def test_completing_a_task_twice_is_rejected():
+    pet = Pet("Mochi", "dog")
+    walk = Task("Walk", 30)
+    pet.add_task(walk)
+    pet.complete_task(walk.id, MONDAY)
+
+    with pytest.raises(ValueError):
+        pet.complete_task(walk.id, MONDAY)
+    assert len(pet.tasks) == 2
+
+
+# --- Conflict detection -------------------------------------------------
+
+def test_detect_conflicts_warns_about_overlapping_pinned_tasks():
+    mochi, luna = Pet("Mochi", "dog"), Pet("Luna", "cat")
+    mochi.add_task(Task("Walk", 30, preferred_time=time(8, 0)))
+    luna.add_task(Task("Breakfast", 10, preferred_time=time(8, 15)))
+    luna.add_task(Task("Play", 20, preferred_time=time(8, 30)))  # touches
+    owner = make_owner(pets=[mochi, luna])
+    scheduler = Scheduler(owner)
+
+    warnings = scheduler.detect_conflicts(MONDAY)
+
+    assert warnings == [
+        "Walk (Mochi) at 08:00 overlaps Breakfast (Luna) at 08:15 "
+        "[different pets]"
+    ]
+    plan = scheduler.generate_plan(MONDAY)
+    assert plan.warnings == warnings
+    assert "⚠" in plan.explain()
+
+
+def test_detect_conflicts_ignores_tasks_not_due_or_done():
+    pet = Pet("Mochi", "dog")
+    done = Task("Pill", 5, preferred_time=time(8, 0))
+    done.mark_complete()
+    pet.add_task(done)
+    pet.add_task(Task("Bath", 45, frequency=Frequency.WEEKLY,
+                      due_weekday=6, preferred_time=time(8, 0)))
+    pet.add_task(Task("Walk", 30, preferred_time=time(8, 0)))
+    owner = make_owner(pets=[pet])
+
+    assert Scheduler(owner).detect_conflicts(MONDAY) == []
+
+
+def test_detect_conflicts_flags_same_pet_at_the_same_time():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Evening walk", 30, preferred_time=time(18, 0)))
+    pet.add_task(Task("Dinner", 10, preferred_time=time(18, 0)))
+    owner = make_owner(pets=[pet])
+
+    assert Scheduler(owner).detect_conflicts(MONDAY) == [
+        "Evening walk (Mochi) at 18:00 overlaps Dinner (Mochi) at 18:00 "
+        "[same pet]"
+    ]
+
+
+def test_pinned_task_running_past_midnight_is_skipped_not_crashing():
+    pet = Pet("Mochi", "dog")
+    pet.add_task(Task("Late walk", 20, preferred_time=time(23, 50)))
+    owner = make_owner(pets=[pet])
+
+    plan = Scheduler(owner, day_end=time(23, 59)).generate_plan(MONDAY)
+
+    assert plan.scheduled == []
+    assert "does not fit" in plan.skipped[0].reason

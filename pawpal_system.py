@@ -6,8 +6,8 @@ Mirrors diagrams/uml.mmd.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from datetime import date, time
+from dataclasses import dataclass, field, replace
+from datetime import date, time, timedelta
 from enum import Enum
 
 
@@ -45,6 +45,9 @@ class Task:
     due_weekday: int | None = None
     # If set, the task is pinned to this start time
     preferred_time: time | None = None
+    # First day the task can be due; set on the next occurrence of a
+    # recurring task so it does not come back on the day it was done
+    due_date: date | None = None
     completed: bool = False
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
@@ -57,7 +60,14 @@ class Task:
                 raise ValueError("weekly tasks need due_weekday 0-6")
 
     def is_due(self, day: date) -> bool:
-        """Return True if this task is due on `day` (weekly: due_weekday)."""
+        """Return True if this task should be done on `day`.
+
+        A task is never due before its `due_date` (set when a recurring
+        task is completed). After that, daily tasks are due every day and
+        weekly tasks only on `due_weekday`.
+        """
+        if self.due_date is not None and day < self.due_date:
+            return False
         if self.frequency is Frequency.WEEKLY:
             return day.weekday() == self.due_weekday
         return True
@@ -69,6 +79,29 @@ class Task:
     def mark_incomplete(self) -> None:
         """Mark this task as not done so it is scheduled again."""
         self.completed = False
+
+    def next_occurrence(self, completed_on: date) -> Task:
+        """Return a fresh copy of this task for its next due day.
+
+        Daily tasks come back the day after `completed_on`. Weekly tasks
+        come back on the next `due_weekday` strictly after `completed_on`:
+        `(due_weekday - weekday) % 7` days ahead, or 7 if that is 0. So a
+        Sunday task done early on Friday is due again this Sunday, and one
+        done on Sunday is due next Sunday.
+
+        The copy keeps every setting but gets a new id, `completed=False`
+        and `due_date` set to that day. This task is not changed.
+        """
+        if self.frequency is Frequency.WEEKLY:
+            days_ahead = (self.due_weekday - completed_on.weekday()) % 7 or 7
+        else:
+            days_ahead = 1
+        return replace(
+            self,
+            completed=False,
+            due_date=completed_on + timedelta(days=days_ahead),
+            id=uuid.uuid4().hex[:8],
+        )
 
 
 @dataclass
@@ -83,13 +116,35 @@ class Pet:
         """Add a care task to this pet."""
         self.tasks.append(task)
 
-    def remove_task(self, task_id: str) -> None:
-        """Remove the task with this id (titles may repeat, ids do not)."""
-        for i, task in enumerate(self.tasks):
+    def get_task(self, task_id: str) -> Task:
+        """Return the task with this id (titles may repeat, ids do not)."""
+        for task in self.tasks:
             if task.id == task_id:
-                del self.tasks[i]
-                return
+                return task
         raise KeyError(f"{self.name} has no task with id {task_id!r}")
+
+    def remove_task(self, task_id: str) -> None:
+        """Remove the task with this id."""
+        self.tasks.remove(self.get_task(task_id))
+
+    def complete_task(self, task_id: str, day: date) -> Task:
+        """Mark a task done on `day` and add its next occurrence.
+
+        The finished task stays in the list (completed) as history, and
+        the copy from `Task.next_occurrence` is appended so the task
+        returns on its next due day.
+
+        Returns the new task. Raises KeyError if no task has `task_id`,
+        and ValueError if it is already completed (completing twice would
+        add a duplicate occurrence).
+        """
+        task = self.get_task(task_id)
+        if task.completed:
+            raise ValueError(f"{task.title!r} is already completed")
+        task.mark_complete()
+        upcoming = task.next_occurrence(day)
+        self.add_task(upcoming)
+        return upcoming
 
 
 # A task together with the pet it belongs to
@@ -112,6 +167,23 @@ class Owner:
     def get_all_tasks(self) -> list[PetTask]:
         """Return every (pet, task) pair across all of this owner's pets."""
         return [(pet, task) for pet in self.pets for task in pet.tasks]
+
+    def filter_tasks(
+        self, pet_name: str | None = None, completed: bool | None = None
+    ) -> list[PetTask]:
+        """Return (pet, task) pairs that match every filter given.
+
+        `pet_name` keeps only that pet's tasks; `completed` keeps only
+        done (True) or not-done (False) tasks. A filter left as None is
+        ignored, so filter_tasks() returns every task. Order is the same
+        as get_all_tasks(). Runs in one pass, O(number of tasks).
+        """
+        return [
+            (pet, task)
+            for pet, task in self.get_all_tasks()
+            if (pet_name is None or pet.name == pet_name)
+            and (completed is None or task.completed == completed)
+        ]
 
 
 @dataclass
@@ -140,6 +212,8 @@ class DailyPlan:
     available_minutes: int
     scheduled: list[ScheduledTask] = field(default_factory=list)
     skipped: list[SkippedTask] = field(default_factory=list)
+    # Pinned tasks whose requested times overlap (see detect_conflicts)
+    warnings: list[str] = field(default_factory=list)
 
     def total_minutes(self) -> int:
         """Return the total minutes of all scheduled tasks."""
@@ -151,6 +225,8 @@ class DailyPlan:
             f"Plan for {self.day:%A, %B %d}: "
             f"{self.total_minutes()} of {self.available_minutes} minutes used."
         ]
+        for warning in self.warnings:
+            lines.append(f"  ⚠ {warning}")
         for entry in self.scheduled:
             lines.append(
                 f"  {entry.start:%H:%M}-{entry.end:%H:%M}  "
@@ -202,6 +278,7 @@ class Scheduler:
         plan = DailyPlan(
             day=day, available_minutes=self.owner.available_minutes
         )
+        plan.warnings = self.detect_conflicts(day)
         due = self._sort_tasks(self._collect_due_tasks(day))
         pinned = [(p, t) for p, t in due if t.preferred_time is not None]
         flexible = [(p, t) for p, t in due if t.preferred_time is None]
@@ -213,6 +290,58 @@ class Scheduler:
 
         plan.scheduled.sort(key=lambda entry: entry.start)
         return plan
+
+    @staticmethod
+    def sort_by_time(items: list[PetTask]) -> list[PetTask]:
+        """Sort pinned tasks by start time; flexible tasks go last.
+
+        The key is a tuple `(has no time, time)`. False sorts before
+        True, so pinned tasks come first, ordered by `preferred_time`.
+        Flexible tasks use `time.min` as a placeholder because None
+        cannot be compared with a time. sorted() is stable, so tasks with
+        the same time, and all flexible tasks, keep their input order.
+        Returns a new list; `items` is not changed. O(n log n).
+        """
+        return sorted(items, key=lambda item: (
+            item[1].preferred_time is None,
+            item[1].preferred_time or time.min,
+        ))
+
+    def detect_conflicts(self, day: date) -> list[str]:
+        """Return a warning for each pair of due pinned tasks that overlap.
+
+        Lightweight on purpose: it only compares requested times and
+        returns messages instead of raising, so a clash never stops the
+        program. generate_plan still resolves the overlap by moving the
+        lower-priority task.
+
+        Pinned tasks are sorted by start time, then each one is compared
+        with the tasks after it until one starts at or after its end;
+        nothing later can overlap, so the inner loop stops there. Tasks
+        that only touch (one ends at 08:30, the next starts at 08:30) do
+        not conflict. Each warning says whether the clash is between the
+        same pet or different pets. Returns [] when there is no conflict.
+        """
+        pinned = []
+        for pet, task in self.sort_by_time(self._collect_due_tasks(day)):
+            if task.preferred_time is None:
+                break
+            start = to_minutes(task.preferred_time)
+            pinned.append((start, start + task.duration_minutes, pet, task))
+
+        warnings = []
+        for i, (start, end, pet, task) in enumerate(pinned):
+            for other_start, _, other_pet, other in pinned[i + 1:]:
+                if other_start >= end:
+                    break
+                who = "same pet" if other_pet is pet else "different pets"
+                warnings.append(
+                    f"{task.title} ({pet.name}) at "
+                    f"{task.preferred_time:%H:%M} overlaps {other.title} "
+                    f"({other_pet.name}) at {other.preferred_time:%H:%M} "
+                    f"[{who}]"
+                )
+        return warnings
 
     def _collect_due_tasks(self, day: date) -> list[PetTask]:
         """Return the owner's tasks that are due on `day` and not done."""
@@ -264,7 +393,8 @@ class Scheduler:
                 or end > to_minutes(self.day_end)):
             plan.skipped.append(SkippedTask(
                 task, pet,
-                f"{task.preferred_time:%H:%M}-{from_minutes(end):%H:%M} "
+                # Not from_minutes(end): it may be past midnight
+                f"{task.preferred_time:%H:%M} + {task.duration_minutes} min "
                 f"does not fit inside "
                 f"{self.day_start:%H:%M}-{self.day_end:%H:%M}",
             ))

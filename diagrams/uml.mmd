@@ -23,11 +23,13 @@ classDiagram
         +Frequency frequency
         +Optional~int~ due_weekday
         +Optional~time~ preferred_time
+        +Optional~date~ due_date
         +bool completed
         +str id
         +is_due(day: date) bool
         +mark_complete() None
         +mark_incomplete() None
+        +next_occurrence(completed_on: date) Task
     }
 
     class Pet {
@@ -37,7 +39,9 @@ classDiagram
         +list~str~ special_needs
         +list~Task~ tasks
         +add_task(task: Task) None
+        +get_task(task_id: str) Task
         +remove_task(task_id: str) None
+        +complete_task(task_id: str, day: date) Task
     }
 
     class Owner {
@@ -47,6 +51,7 @@ classDiagram
         +list~Pet~ pets
         +add_pet(pet: Pet) None
         +get_all_tasks() list~tuple~Pet, Task~~
+        +filter_tasks(pet_name: str, completed: bool) list~tuple~Pet, Task~~
     }
 
     class ScheduledTask {
@@ -68,6 +73,7 @@ classDiagram
         +int available_minutes
         +list~ScheduledTask~ scheduled
         +list~SkippedTask~ skipped
+        +list~str~ warnings
         +total_minutes() int
         +explain() str
     }
@@ -78,6 +84,8 @@ classDiagram
         +time day_end
         +__init__(owner: Owner, day_start: time, day_end: time)
         +generate_plan(day: date) DailyPlan
+        +sort_by_time(items: list~tuple~Pet, Task~~)$ list~tuple~Pet, Task~~
+        +detect_conflicts(day: date) list~str~
         -_collect_due_tasks(day: date) list~tuple~Pet, Task~~
         -_sort_tasks(items: list~tuple~Pet, Task~~) list~tuple~Pet, Task~~
         -_find_conflicts(entries: list~ScheduledTask~) list~tuple~
